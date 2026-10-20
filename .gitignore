@@ -1,0 +1,8 @@
+.venv/
+config.local.json
+logs/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/

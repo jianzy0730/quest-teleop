@@ -1,0 +1,13 @@
+{
+  "transport": "usb",
+  "only": "both",
+  "side": "right",
+  "scale": 1.0,
+  "wsl_distro": "Ubuntu-22.04",
+  "hand_python": "~/.venv-quest-teleop/bin/python",
+  "right_hand_serial": "WH2KA01260905017",
+  "left_hand_serial": "WH2JA01260902022",
+  "ros_domain_id": 24,
+  "thor_host": "6.6.8.100",
+  "thor_port": 8002
+}
