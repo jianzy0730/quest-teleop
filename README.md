@@ -75,7 +75,7 @@ Windows 按上述步骤安装时，`hand_python` 保持 `~/.venv-quest-teleop/bi
 ```bash
 cd /home/user/quest-teleop
 source /etc/apex/apex_ros_env.sh
-python3 -u -m quest_teleop.arm_bridge
+python3 -u -m quest_teleop.arm.thor
 ```
 
 保持该终端运行，允许电脑访问机器人 TCP `8002`。修改端口时，机器人加 `--port <端口>`，电脑加 `--thor-port <端口>`。
@@ -153,7 +153,7 @@ Windows 示例（Linux 使用同样参数）：
 - **头显报 momo 错误**：先启动电脑端并等到等待输入提示，确认 TCP 地址、端口和 Video Feed 设置，再 Stop / Start Streaming；无法停止时重开 App。
 - **端口占用**：用 Ctrl+C 结束之前的遥操进程。修改 Quest 端口时，电脑 `--port` 和头显端口需一致。
 - **没有手姿态**：先确认头显本身能识别裸手，再确认 Debug Info 已开启，所选侧的手在视野内。
-- **电脑一直等待 Thor**：确认 `thor_host` 是机器人 IP，机器人已运行 `quest_teleop.arm_bridge`，电脑可访问机器人 TCP `8002`，且两端使用同一版代码。
+- **电脑一直等待 Thor**：确认 `thor_host` 是机器人 IP，机器人已运行 `quest_teleop.arm.thor`，电脑可访问机器人 TCP `8002`，且两端使用同一版代码。
 - **手臂一直等模式或反馈**：在机器人终端加载厂商 ROS 环境，核对 `ROS_DOMAIN_ID`、末端反馈和模式 `[1,1]`、input=1、IK source=2。
 - **手连不上**：检查序列号、USB 权限和设备是否被其他程序占用。Windows 用户还需确认 Wuji USB 已接入 WSL。
 - **Windows 手部一直等帧**：确认 WSL 镜像网络已生效，且没有防火墙规则阻止本地 `8001` 端口。

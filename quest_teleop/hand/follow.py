@@ -5,10 +5,10 @@ import math
 from pathlib import Path
 import time
 
-from .config import ROOT, load_config
-from .quest.frames import LiveGate, packets_by_key
-from .ipc import FrameSubscriber
-from .retarget.hand import WujiHandRetargeter
+from ..config import ROOT, load_config
+from ..quest.frames import LiveGate, packets_by_key
+from ..ipc import FrameSubscriber
+from .retarget import WujiHandRetargeter
 
 
 def main():
@@ -96,7 +96,7 @@ def main():
             if args.execute:
                 # Initialize only after fresh input has warmed up the mapper.
                 if hand is None and preview_samples >= 20 and time.monotonic() - begun >= 1:
-                    from .devices.wuji import WujiHand
+                    from .wuji import WujiHand
                     hand = WujiHand(args.side, load_config()[args.side + '_hand_serial'], args.stop_file)
                     hand.start()
                     continue

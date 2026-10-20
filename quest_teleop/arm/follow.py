@@ -5,10 +5,10 @@ import math
 from pathlib import Path
 import time
 
-from .config import ROOT, load_config
-from .quest.frames import WristGate, packets_by_key
-from .ipc import FrameSubscriber
-from .retarget.arm import WristMapper, packet_pose, pose
+from ..config import ROOT, load_config
+from ..quest.frames import WristGate, packets_by_key
+from ..ipc import FrameSubscriber
+from .retarget import WristMapper, packet_pose, pose
 
 
 class ArmFollower:

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-ASSETS = Path(__file__).resolve().parents[1] / 'assets'
+ASSETS = Path(__file__).resolve().parent / 'assets'
 
 
 class WujiHandRetargeter:

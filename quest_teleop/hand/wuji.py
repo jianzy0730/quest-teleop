@@ -126,7 +126,7 @@ class WujiHand:
         self.cancel = threading.Event()
         self.lock = threading.Lock()
         self.worker = None
-        self.config = json.loads((Path(__file__).resolve().parents[1] / 'assets/hand.json').read_text())
+        self.config = json.loads((Path(__file__).resolve().parent / 'assets/hand.json').read_text())
         self.safety = self.config['safety']
         self.session = {"side": side, "phase": "idle", "last_seq": -1,
                         "last_target_at": None, "target": None, "actual_rad": None,
