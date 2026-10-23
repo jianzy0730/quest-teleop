@@ -1,6 +1,6 @@
 .venv/
-config.local.json
 logs/
+recordings/
 __pycache__/
 *.py[cod]
 *.egg-info/

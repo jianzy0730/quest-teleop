@@ -5,6 +5,16 @@ import socket
 import time
 
 
+def write_status(path, state):
+    """Atomic, low-rate UI telemetry; motion frames continue over TCP."""
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps({**state, 'updated_ns': time.time_ns()}, allow_nan=False), encoding='utf-8')
+    try:
+        temporary.replace(path)
+    except PermissionError:
+        pass  # A Windows UI reader may briefly hold the previous snapshot open.
+
+
 class FramePublisher:
     def __init__(self, host, port, on_request=None):
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -70,7 +80,10 @@ class FramePublisher:
                         raise ValueError('request too large')
                     if b'\n' not in request:
                         continue
-                    response = self.on_request(json.loads(request))
+                    payload = json.loads(request)
+                    if not isinstance(payload, dict):
+                        raise ValueError('request must be an object')
+                    response = self.on_request(payload)
                     request.clear()
                     self.clients[client] = memoryview(json.dumps(
                         {**response, 'sent_unix_ns': time.time_ns()},
@@ -81,7 +94,7 @@ class FramePublisher:
                     self._drop(client)
             except BlockingIOError:
                 pass
-            except (OSError, ValueError, KeyError, TypeError):
+            except (OSError, ValueError, KeyError, TypeError, OverflowError, RecursionError):
                 self._drop(client)
         for client in writable:
             if client not in self.clients or self.clients[client] is None:

@@ -1,4 +1,4 @@
-include config.example.json
+include config.json
 include reference/original-teleop-20261018.zip
 recursive-include quest_teleop/hand/assets *
 include quest_teleop/hand/vendor/wuji_retargeting/LICENSE

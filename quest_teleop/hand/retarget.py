@@ -1,11 +1,46 @@
 """Quest landmarks to absolute Wuji Hand 2 angles for either side."""
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 import yaml
 
 ASSETS = Path(__file__).resolve().parent / 'assets'
+
+
+class OneEuroFilter:
+    """Speed-adaptive joint filtering in radians, using source sample times.
+
+    Casiez et al., CHI 2012: https://gery.casiez.net/1euro/
+    Fast motion increases the cutoff; no lookahead or velocity cap is used.
+    """
+
+    def __init__(self, min_cutoff=3., beta=8., derivative_cutoff=3.):
+        self.min_cutoff, self.beta = min_cutoff, beta
+        self.derivative_cutoff = derivative_cutoff
+        self.timestamp = self.filtered = None
+        self.derivative = 0.
+
+    @staticmethod
+    def alpha(cutoff, dt):
+        r = 2 * np.pi * cutoff * dt
+        return r / (1 + r)
+
+    def __call__(self, value, timestamp):
+        dt = None if self.timestamp is None else timestamp - self.timestamp
+        if dt is None or not 0 < dt <= .25:
+            # Do not blend across a tracking gap or a Quest clock restart.
+            self.filtered = value.copy()
+            self.derivative = np.zeros_like(value)
+        else:
+            velocity = (value - self.filtered) / dt
+            a = self.alpha(self.derivative_cutoff, dt)
+            self.derivative += a * (velocity - self.derivative)
+            cutoff = self.min_cutoff + self.beta * np.abs(self.derivative)
+            self.filtered += self.alpha(cutoff, dt) * (value - self.filtered)
+        self.timestamp = timestamp
+        return self.filtered.copy()
 
 
 class WujiHandRetargeter:
@@ -47,6 +82,7 @@ class WujiHandRetargeter:
         if not np.allclose(robot.joint_limits[self.order], self.limits, atol=1e-6):
             raise RuntimeError('retarget model and driver joint limits differ')
         self.mapping = dict(zip(expected, self.order))
+        self.pose_filter = OneEuroFilter()
 
     def fk(self, q_sdk):
         robot = self.retargeter.optimizer.robot
@@ -71,7 +107,7 @@ class WujiHandRetargeter:
                 raise ValueError('invalid finger geometry')
         return p
 
-    def solve(self, points):
+    def solve(self, points, timestamp=None):
         # Unity is left handed. Reflect once before constructing the anatomical
         # right-handed coordinate frame. Points are wrist-local metres already.
         p = self.validate(points) * [1, 1, -1]
@@ -79,4 +115,5 @@ class WujiHandRetargeter:
         if q.shape != (20,) or not np.all(np.isfinite(q)):
             self.retargeter.reset()
             raise ValueError('invalid retarget output')
-        return np.clip(q, self.limits[:, 0], self.limits[:, 1])
+        q = np.clip(q, self.limits[:, 0], self.limits[:, 1])
+        return self.pose_filter(q, time.monotonic() if timestamp is None else timestamp)

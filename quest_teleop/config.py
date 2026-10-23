@@ -18,7 +18,7 @@ DEFAULTS = {
 
 def load_config(path=None):
     chosen = path or os.environ.get('QUEST_TELEOP_CONFIG')
-    chosen = Path(chosen).expanduser().resolve() if chosen else ROOT / 'config.local.json'
+    chosen = Path(chosen).expanduser().resolve() if chosen else ROOT / 'config.json'
     config = deepcopy(DEFAULTS)
     if chosen.exists():
         overrides = json.loads(chosen.read_text(encoding='utf-8-sig'))

@@ -15,7 +15,7 @@ STREAM_POLICIES = {"position_limit_policy": "clamp_and_warn",
                    "diagnostic_warning_policy": "warn_and_continue",
                    "tracking_error_policy": "warn_and_continue",
                    "feedback_limit_policy": "warn_and_continue",
-                   "learned_limit_policy": "while_active"}
+                   "learned_limit_policy": "until_retreat"}
 
 
 def number(value, label):
@@ -74,7 +74,9 @@ class PositionLimits:
 
     The status bit has no direction. Infer it only from a previously sent
     command, never from a new operator target. With no such evidence, hold
-    the flagged joint until the bit clears. Cleared bits release learned bounds.
+    the flagged joint until the bit clears. A known boundary is released only
+    after measured motion retreats 0.02 rad, so a flickering status bit cannot
+    repeatedly release an outward target at the same boundary.
     """
 
     def __init__(self):
@@ -85,8 +87,12 @@ class PositionLimits:
 
     def observe(self, active, actual, previous_command):
         active = set(active)
-        for i in self.active - active:
-            self.lower[i] = self.upper[i] = None
+        for i in range(20):
+            if i not in active:
+                if self.lower[i] is not None and actual[i] > self.lower[i] + .02:
+                    self.lower[i] = None
+                if self.upper[i] is not None and actual[i] < self.upper[i] - .02:
+                    self.upper[i] = None
         self.unknown.intersection_update(active)
         for i in active - self.active:
             delta = 0 if previous_command is None else previous_command[i] - actual[i]
@@ -94,7 +100,7 @@ class PositionLimits:
                 self.upper[i] = actual[i] if self.upper[i] is None else min(self.upper[i], actual[i])
             elif delta < -.001:
                 self.lower[i] = actual[i] if self.lower[i] is None else max(self.lower[i], actual[i])
-            else:
+            elif self.lower[i] is None and self.upper[i] is None:
                 self.unknown.add(i)
         self.active = active
 
@@ -163,10 +169,19 @@ class WujiHand:
             raise InterruptedError('motion cancelled')
 
     def _connect(self):
-        available = {device.sn: device for device in self.manager.scan()}
-        self._check_cancel()
-        if self.serial not in available:
-            raise RuntimeError(f'{self.side} hand {self.serial} not discovered')
+        last_report = -math.inf
+        while True:
+            self._check_cancel()
+            available = {device.sn: device for device in self.manager.scan()}
+            self._check_cancel()
+            if self.serial in available:
+                break
+            now = time.monotonic()
+            if now - last_report >= 5:
+                print(json.dumps({'warning': 'waiting for Wuji hand discovery',
+                                  'side': self.side, 'serial': self.serial}), flush=True)
+                last_report = now
+            self.cancel.wait(.5)
         if available[self.serial].device_type != self.sdk.DeviceType.WujiHand2:
             raise RuntimeError(f'{self.serial} is not a Wuji Hand 2')
         return self.manager.connect(sn=self.serial, device_name='wuji_' + self.side)
@@ -254,6 +269,16 @@ class WujiHand:
             hand.effort_limit().set(self.safety["effort_limit_a"])
             hand.mit_params().set((self.safety["mit_kp"], self.safety["mit_kd"]))
             states = hand.joint_states().subscribe()
+            # State and diagnostics share a 1000 Hz device stream. The local
+            # command loop is 100 Hz; 200 Hz feedback avoids draining/decoding
+            # thousands of unused frames while the retargeter is computing.
+            try:
+                feedback_hz = states.set_rate(200)
+                self._patch(feedback_hz=feedback_hz)
+            except self.sdk.WujiException as error:
+                # Older firmware can still run at its native feedback rate.
+                print(json.dumps({'warning': 'feedback rate unchanged',
+                                  'side': self.side, 'detail': str(error)}), flush=True)
             # Pre-enable Ready frames must not be mistaken for running faults.
             diagnostics.close()
             diagnostics = None
@@ -297,19 +322,28 @@ class WujiHand:
             tracking_bad_since = None
             while True:
                 self._check_cancel()
+                latest_state = None
                 for _ in range(100):
                     frame = states.recv()
                     if frame is None:
                         break
-                    actual = unpack_states(frame, self.sdk)
+                    latest_state = frame
+                if latest_state is not None:
+                    actual = unpack_states(latest_state, self.sdk)
                     state_seen = time.monotonic()
+                diagnostic_warnings = None
                 for _ in range(100):
                     frame = diagnostics.recv()
                     if frame is None:
                         break
                     self._check_cancel()
-                    active_limits = self._check_diagnostics(frame, 2)
+                    # Inspect every diagnostic for faults, but publish one
+                    # snapshot per tick rather than locking for every frame.
+                    diagnostic_warnings = []
+                    active_limits = check_diagnostics(frame, self.sdk, 2, diagnostic_warnings)
                     diag_seen = time.monotonic()
+                if diagnostic_warnings is not None:
+                    self._patch(diagnostic_warnings=diagnostic_warnings)
                 limits.observe(active_limits, actual, command)
                 now = time.monotonic()
                 self._check_cancel()

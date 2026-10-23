@@ -1,161 +1,165 @@
 # Quest Teleop
 
-用 Quest 3 裸手遥操 Thor 和 Wuji Hand 2。支持左侧、右侧或双侧，可单独控制臂或手，默认右臂 + 右手。
+用 Quest 3 的裸手姿态控制天机机械臂和 Wuji Hand 2，支持单侧、双侧，以及动作采集和回放。
 
-## 1. 安装
+这份教程从设备已上电、网络已接通开始。还没配置网口、WSL 或 Quest的，先看[首次配置](docs/setup.md)。
 
-需要 Python 3.10+ 和头显上的 [Hand Tracking Streamer](https://github.com/wengmister/hand-tracking-streamer)。USB 连接需要 ADB。下面的命令均从本仓库目录执行；Windows 和 Linux 选择对应步骤。
+## 1. 安装（只做一次）
 
-### Windows + WSL
+下面按 **Windows 11 + Ubuntu-22.04 WSL，同时控制机械臂和灵巧手** 安装。
 
-在 PowerShell 安装电脑端接收和预览环境：
+### 在 Windows 安装主程序
+
+从 [GitHub](https://github.com/jianzy0730/quest-teleop) 拉取代码。
+
+打开 **PowerShell**，执行：
 
 ```powershell
+cd C:\path\to\quest-teleop
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
-if (-not (Test-Path config.local.json)) { Copy-Item config.example.json config.local.json }
 ```
 
-安装 [Android Platform Tools](https://developer.android.com/tools/releases/platform-tools)，并确保 `adb devices` 能运行。
+### 在 WSL 安装手部依赖
 
-控制 Wuji 手还需要 Ubuntu 22.04 WSL；仅控制机械臂可跳过以下 WSL 步骤。在 WSL 中进入同一仓库目录，执行：
+打开 **Ubuntu-22.04 终端**，执行：
 
 ```bash
-sudo apt-get install python3-venv
+cd /mnt/c/path/to/quest-teleop
+sudo apt-get update
+sudo apt-get install -y python3-venv
 python3 -m venv ~/.venv-quest-teleop
 ~/.venv-quest-teleop/bin/python -m pip install -e '.[hand]'
 ```
 
-Windows 与 WSL 通过 localhost 通信。需要支持镜像网络的 Windows 11 / WSL 2；在 `%USERPROFILE%\.wslconfig` 中合并以下配置，保存后运行 `wsl --shutdown`，再重新打开 WSL：
+### 配置
 
-```ini
-[wsl2]
-networkingMode=mirrored
-```
+**目前默认配置：**
 
-使用 [usbipd-win](https://github.com/dorssel/usbipd-win) 将 **Wuji 手的 USB 设备**接入 WSL；Quest 留在 Windows，由 Windows ADB 接收。
-
-### 原生 Linux
-
-```bash
-sudo apt-get install python3-venv adb
-python3 -m venv .venv
-./.venv/bin/python -m pip install -e '.[hand]'
-test -f config.local.json || cp config.example.json config.local.json
-```
-
-Wuji 手直接接入 Linux，按 [Wuji SDK](https://pypi.org/project/wuji-sdk/) 要求配置 USB 访问权限。仅用机械臂时，将安装命令中的 `'.[hand]'` 改为 `.`。
-
-## 2. 配置
-
-编辑 `config.local.json`：
-
-| 字段 | 填写内容 |
+| 设备 | 默认配置 |
 | --- | --- |
-| `right_hand_serial` / `left_hand_serial` | 对应侧 Wuji 手的序列号；不用的一侧可留空字符串 |
-| `hand_python` | 手部环境的 Python 路径；Windows 使用 WSL 内路径 |
-| `wsl_distro` | Windows 上的 WSL 发行版名称；原生 Linux 忽略此项 |
-| `thor_host` | Thor 的 IP，默认 `6.6.8.100` |
-| `thor_port` | Thor 目标接收端口，默认 `8002` |
+| 天机 | `6.6.8.100:8002` |
+| Wuji 左手序列号 | `WH2JA01260902022` |
+| Wuji 右手序列号 | `WH2KA01260905017` |
 
-Windows 按上述步骤安装时，`hand_python` 保持 `~/.venv-quest-teleop/bin/python`。原生 Linux 改为本仓库环境的绝对路径，例如 `/home/you/quest-teleop/.venv/bin/python`。
+使用上面这套设备时不用修改。换设备或 WSL 发行版时，直接编辑项目根目录的 `config.json`：
 
-## 3. 准备设备
+| 配置项 | 填什么 |
+| --- | --- |
+| `thor_host` | 天机的 IP 地址 |
+| `left_hand_serial` / `right_hand_serial` | 左右手实际序列号 |
+| `wsl_distro` | WSL 发行版名称，默认 `Ubuntu-22.04` |
 
-预览模式可跳过这一步。
+## 2. 启动遥操（每次使用）
 
-### Thor：在机器人上运行目标转发
+下面先启动默认的**右臂 + 右手**。先在电脑开网页，再在头显开始串流。
 
-仅控制 Wuji 手时跳过本节。将仓库源码复制到机器人，例如 `/home/user/quest-teleop`，使用机器上已有的厂商 Python / ROS 2 / IK 环境运行。
+1. 给天机和灵巧手上电并连接电脑，确认天机控制软件和遥操桥接已运行。Quest 用 USB 数据线接电脑，在头显里允许 USB 调试。
+2. 在 **PowerShell** 执行，保持这个窗口打开：
 
-机器人需已设置模式 `[1,1]`、input=1、IK source=2，程序不会自动切换。默认 `ROS_DOMAIN_ID=24`，可通过环境变量修改。
+   ```powershell
+   cd C:\path\to\quest-teleop
+   .\.venv\Scripts\python.exe -u -m quest_teleop.web
+   ```
 
-关闭其他发送机械臂目标的程序，保留厂商 `apex-robot`、`apex-teleop` 服务。在机器人终端执行：
+3. 浏览器打开 **http://127.0.0.1:8766**。在“实时控制”中选择：
 
-```bash
-cd /home/user/quest-teleop
-source /etc/apex/apex_ros_env.sh
-python3 -u -m quest_teleop.arm.thor
-```
+   | 项目 | 怎么选 |
+   | --- | --- |
+   | 设备 | **手臂 + 灵巧手**（默认） |
+   | 控制侧 | **右侧**（默认；用双臂双手时选“左右双侧”） |
+   | Quest 连接 | USB |
 
-保持该终端运行，允许电脑访问机器人 TCP `8002`。修改端口时，机器人加 `--port <端口>`，电脑加 `--thor-port <端口>`。
+   点 **启动**，程序开始等待 Quest 数据，收到后即可遥操手臂和灵巧手。
 
-### Wuji
+4. 戴上 Quest，打开 [Hand Tracking Streamer](https://github.com/wengmister/hand-tracking-streamer)，设置：
 
-将手接入 Linux / WSL，填写对应序列号，关闭其他占用该手的程序。无需单独启动 Wuji 服务。
+   | 项目 | 设置 |
+   | --- | --- |
+   | 协议 / 地址 / 端口 | **TCP / 127.0.0.1 / 8000** |
+   | Head Pose、Debug Info | 开启 |
+   | Video Feed | 关闭 |
 
-## 4. 连接 Quest 并运行
+   面向你希望对应机器人前方的方向，将所选侧的手放在头显视野内，点 **Start Streaming**。先保持起始姿势，需要和目前机器人姿势类似比较方便；程序会将起始手腕姿势对齐到机械臂当前末端。
 
-### USB
+手臂移动幅度不合适时，停止后在网页“更多设置”里改 **手臂平移比例**。例如 `1.5` 表示人手移动 10 cm，机械臂目标移动 15 cm；旋转比例不变。
 
-1. Quest 用 USB 接电脑，戴上头显并允许 USB 调试。
-2. 打开 Hand Tracking Streamer，设置 **TCP / 127.0.0.1 / 8000**。
-3. 打开 **Head Pose、Debug Info**，关闭 **Video Feed**。
-4. 在电脑启动下面的遥操命令，出现等待提示后，在头显点 **Start Streaming**。
-5. 让所选侧的手保持在头显视野中；控制机械臂时，面向希望对应机器人前方的方向，等待电脑终端的标定提示后移动。
 
-Windows PowerShell：
+## 3. 采集动作
+
+按上一节启动遥操，确认机器人能跟随，再到“采集”区域操作：
+
+1. 点 **开始采集**，做需要录制的动作。
+2. 点 **结束采集**，保存这段录制。
+
+**采集期间手臂和灵巧手照常跟随，结束采集也不会停止遥操。**
+
+也可以勾选 **✌ 手势开始录制**（默认关闭）：将所选侧的手保持 ✌ 约 0.7 秒，电脑响一声后开始录制。双侧遥操时任一只手均可触发。结束仍点 **结束采集**；再次触发前先放下手势，再重新做 ✌。
+
+录制文件保存在项目的 `recordings/`，保存后出现在网页回放列表。录的是 Quest 姿态数据，不是摄像头视频或机器人实际运动轨迹。
+
+## 4. 回放动作
+
+1. 点 **停止全部**，结束当前遥操。
+2. 在“回放”列表中选一条录制，选择速度，默认 `1×`。
+3. 回放方式选 **执行到机器人**，再点 **回放选中动作**。默认的“仅预览”只运行姿态计算，不驱动机器人，也没有三维动画画面。
+
+回放不需要连接 Quest，会使用录制时的设备、控制侧和手臂平移比例。**机械臂从回放开始时的当前位置复现相对动作，不会自动回到录制时的绝对位置。** 中途停止同样点“停止全部”。
+
+## 遇到问题
+
+| 现象 | 先检查什么 |
+| --- | --- |
+| Quest 一直等待串流 | `adb devices` 应显示 `device`；核对头显的 TCP、地址和端口，再 Stop → Start Streaming |
+| 头显报 momo 错误 | 先在网页点“启动”，关闭 Video Feed，再重新串流；App 卡住时重新打开 |
+| 收到数据但机器人不动 | 看网页设备状态是等待连接、等待控制模式，还是跟随中，再检查对应设备 |
+| 找不到 Wuji 手 | 检查供电、[双网口配置](docs/setup.md#wuji)、序列号；关闭其他占用手的程序 |
+| 提示端口占用 | 结束之前运行的网页或命令行进程，再重新启动 |
+
+仍有问题时，查看项目 `logs/` 下最新会话的 `console.log` 和对应设备日志。
+
+## 其他用法
+
+<details>
+<summary>只控制手或只控制臂</summary>
+
+先停止当前会话，将网页的“设备”改为“仅灵巧手”或“仅手臂”，再点“启动”。
+
+</details>
+
+<details>
+<summary>不用网页，直接命令行遥操</summary>
+
+在项目目录的 PowerShell 中执行；不要与网页会话同时运行：
 
 ```powershell
-.\.venv\Scripts\python.exe -u -m quest_teleop
-```
-
-原生 Linux：
-
-```bash
-./.venv/bin/python -u -m quest_teleop
-```
-
-电脑按 **Ctrl+C** 停止遥操；Thor 转发程序保留运行，等待下次连接。在机器人终端按 **Ctrl+C** 可结束转发程序。
-
-### Wi-Fi
-
-Quest 与电脑连接同一可互通的网络。头显选择 UDP，填写电脑在该网络上的 IP 和端口 `9000`，电脑命令增加：
-
-```text
---transport udp --port 9000
-```
-
-允许防火墙接收该端口的 UDP 数据；其他头显设置与 USB 相同。
-
-## 5. 常用参数
-
-在运行命令后追加：
-
-| 参数 | 用途 |
-| --- | --- |
-| `--only <选项>` | `arm`、`hand` 或 `both`，默认 `both` |
-| `--side <选项>` | `left`、`right` 或 `both`，默认 `right` |
-| `--preview` | 接收和计算姿态，不控制设备 |
-| `--scale 1.5` | 手腕位移放大到 1.5 倍；默认 `1.0`，旋转保持 1:1 |
-| `--thor-host <机器人IP>` | 指定机器人地址，默认读取配置 |
-
-Windows 示例（Linux 使用同样参数）：
-
-```powershell
-# 仅左手
-.\.venv\Scripts\python.exe -u -m quest_teleop --side left --only hand
+# 右臂 + 右手
+.\.venv\Scripts\python.exe -u -m quest_teleop --only both --side right
 
 # 双臂 + 双手
-.\.venv\Scripts\python.exe -u -m quest_teleop --side both
-
-# 仅双臂
-.\.venv\Scripts\python.exe -u -m quest_teleop --side both --only arm
+.\.venv\Scripts\python.exe -u -m quest_teleop --only both --side both
 ```
 
-`--side` 与 `--only` 可自由组合。完整参数可在上述运行命令后加 `--help` 查看。
+`--only` 可选 `arm`（只控制臂）、`hand`（只控制手）、`both`；`--side` 可选 `left`、`right`、`both`。出现 `Waiting for Quest` 后在头显开始串流，停止按 `Ctrl+C`。
 
-## 6. 常见问题
+这些命令会直接控制设备。只想预览计算结果时加 `--preview`；命令行不会自动生成网页中的录制动作。
 
-日志保存在电脑 `logs/session_*`。输入中断时程序暂停等待；恢复后，机械臂重新对齐当前末端，灵巧手继续跟随当前手势。
+</details>
 
-- **一直等 USB**：运行 `adb devices`；`unauthorized` 时在头显允许 USB 调试，没有设备时检查数据线和连接。
-- **头显报 momo 错误**：先启动电脑端并等到等待输入提示，确认 TCP 地址、端口和 Video Feed 设置，再 Stop / Start Streaming；无法停止时重开 App。
-- **端口占用**：用 Ctrl+C 结束之前的遥操进程。修改 Quest 端口时，电脑 `--port` 和头显端口需一致。
-- **没有手姿态**：先确认头显本身能识别裸手，再确认 Debug Info 已开启，所选侧的手在视野内。
-- **电脑一直等待 Thor**：确认 `thor_host` 是机器人 IP，机器人已运行 `quest_teleop.arm.thor`，电脑可访问机器人 TCP `8002`，且两端使用同一版代码。
-- **手臂一直等模式或反馈**：在机器人终端加载厂商 ROS 环境，核对 `ROS_DOMAIN_ID`、末端反馈和模式 `[1,1]`、input=1、IK source=2。
-- **手连不上**：检查序列号、USB 权限和设备是否被其他程序占用。Windows 用户还需确认 Wuji USB 已接入 WSL。
-- **Windows 手部一直等帧**：确认 WSL 镜像网络已生效，且没有防火墙规则阻止本地 `8001` 端口。
+<details>
+<summary>原生 Ubuntu 安装与启动</summary>
 
-当前目标转发方案、左手及双侧臂手并行仍需真机标定和跟随验证；原生 Linux 整套运行仍待验证。
+在项目目录执行，不需要 WSL：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-venv adb
+python3 -m venv .venv
+./.venv/bin/python -m pip install -e '.[hand]'
+```
+
+编辑 `config.json`，将 `hand_python` 改成本项目 Python 的绝对路径，例如 `/home/you/quest-teleop/.venv/bin/python`。
+
+启动网页用 `./.venv/bin/python -u -m quest_teleop.web`，后续网页操作与 Windows 相同。手的网卡地址、路由需在 Ubuntu 中配置；原生 Ubuntu 整套流程仍待真机验证。
+
+</details>

@@ -79,6 +79,10 @@ def main():
     parser.add_argument('--frame-port', type=int, default=8001)
     parser.add_argument('--frame-bind', default='127.0.0.1', help='Local frame listener IP; default localhost')
     parser.add_argument('--preview', action='store_true', help='Calculate poses locally without connecting to devices')
+    parser.add_argument('--capture-only', action='store_true', help='Receive Quest data without starting robot followers')
+    parser.add_argument('--replay', type=Path, help='Replay a recorded Quest JSONL instead of receiving live input')
+    parser.add_argument('--speed', type=float, default=1., help='Replay speed (default 1)')
+    parser.add_argument('--output', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     config = load_config(args.config)
     for name in ('only', 'side', 'transport', 'port', 'scale', 'thor_host', 'thor_port'):
@@ -86,6 +90,13 @@ def main():
             setattr(args, name, config[name])
     if not math.isfinite(args.scale) or args.scale <= 0:
         parser.error('scale must be positive and finite')
+    if not math.isfinite(args.speed) or not .1 <= args.speed <= 4:
+        parser.error('speed must be between 0.1 and 4')
+    if args.replay:
+        from .recording import read_header
+        header = read_header(args.replay)
+        for name in ('only', 'side', 'scale'):
+            setattr(args, name, header['config'][name])
     if args.port is None:
         args.port = 8000 if args.transport == 'usb' else 9000
     if not 1 <= args.port <= 65535:
@@ -96,14 +107,14 @@ def main():
         parser.error('Thor port must be 1..65535')
     sides = ('left', 'right') if args.side == 'both' else (args.side,)
     arms = args.only in ('arm', 'both')
-    if args.only != 'arm' and not args.preview:
+    if args.only != 'arm' and not args.preview and not args.capture_only:
         for side in sides:
             if not config[side + '_hand_serial']:
                 parser.error(side + '_hand_serial must be configured')
     frame_bind = args.frame_bind
     frame_host = '127.0.0.1' if frame_bind == '0.0.0.0' else frame_bind
-    output = ROOT / 'logs' / ('session_' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6])
-    output.mkdir(parents=True)
+    output = args.output or ROOT / 'logs' / ('session_' + time.strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6])
+    output.mkdir(parents=True, exist_ok=args.output is not None)
     config.update(only=args.only, side=args.side, transport=args.transport, port=args.port, scale=args.scale,
                   thor_host=args.thor_host, thor_port=args.thor_port)
     effective_config = output / 'config.json'
@@ -121,14 +132,16 @@ def main():
 
     print('Session: ' + str(output), flush=True)
     try:
-        for host, port, tcp in (('127.0.0.1' if args.transport == 'usb' else '0.0.0.0', args.port, args.transport == 'usb'),
-                                (frame_bind, args.frame_port, True)):
+        ports = [(frame_bind, args.frame_port, True)]
+        if not args.replay:
+            ports.append(('127.0.0.1' if args.transport == 'usb' else '0.0.0.0', args.port, args.transport == 'usb'))
+        for host, port, tcp in ports:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM if tcp else socket.SOCK_DGRAM) as probe:
                 try:
                     probe.bind((host, port))
                 except OSError as error:
                     raise RuntimeError(f'Cannot listen on {host}:{port}: {error}. Stop the previous console with Ctrl+C.') from error
-        if args.transport == 'usb':
+        if args.transport == 'usb' and not args.replay:
             adb_reverse(args.port, stop)
         command = [sys.executable, '-u', '-m', 'quest_teleop.quest.receiver',
                    '--transport', 'tcp' if args.transport == 'usb' else 'udp',
@@ -136,8 +149,14 @@ def main():
                    '--port', str(args.port), '--frame-host', frame_bind, '--frame-port', str(args.frame_port),
                    '--only', args.only, '--side', args.side,
                    '--output', str(output), '--stop-file', str(stop)]
+        if args.replay:
+            command = [sys.executable, '-u', '-m', 'quest_teleop.recording', str(args.replay.resolve()),
+                       '--speed', str(args.speed), '--frame-host', frame_bind, '--frame-port', str(args.frame_port),
+                       '--output', str(output), '--only', args.only, '--side', args.side]
+            if args.capture_only:
+                command += ['--capture-only']
         launch('receive', command)
-        if arms:
+        if arms and not args.capture_only:
             command = [sys.executable, '-u', '-m', 'quest_teleop.arm.follow',
                        '--frame-host', frame_host, '--frame-port', str(args.frame_port),
                        '--side', args.side, '--scale', str(args.scale),
@@ -149,20 +168,21 @@ def main():
                 print(f'Thor target bridge: {args.thor_host}:{args.thor_port}; '
                       f'on Thor run: python3 -u -m quest_teleop.arm.thor --port {args.thor_port}', flush=True)
             launch('arms', command)
-        if args.only in ('both', 'hand'):
+        if args.only in ('both', 'hand') and not args.capture_only:
             for side in sides:
                 command = hand_command(config, ROOT, frame_host, args.frame_port, output, stop, effective_config, side)
                 if not args.preview:
                     command += ['--execute']
                 launch('hand_' + side, command)
-        print('Waiting for Quest. Start Streaming; Video Feed OFF. Ctrl+C stops forwarding and local hands.', flush=True)
+        print('Preparing replay.' if args.replay else 'Waiting for Quest. Start Streaming; Video Feed OFF. Ctrl+C stops forwarding and local hands.', flush=True)
         positions = {name: 0 for name in children}
         while not stop.exists():
             for name, child in children.items():
                 if child.poll() is not None:
+                    if args.replay and name == 'receive' and child.returncode == 0:
+                        stop.touch()
+                        break
                     raise RuntimeError(name + ' exited; see ' + str(output / (name + '.log')))
-                if name == 'receive':
-                    continue
                 with (output / (name + '.log')).open(encoding='utf-8', errors='replace') as log:
                     log.seek(positions[name])
                     lines = log.readlines()

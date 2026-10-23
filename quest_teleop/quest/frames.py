@@ -78,9 +78,18 @@ class LiveGate:
             raise ValueError('enable Debug Info in HTS; nonnegative frame sequence/time required')
         if self.source_seq is not None and (seq < self.source_seq or source_ns < self.source_ns):
             candidate = self.restart_candidate
-            self.restart_candidate = (seq, source_ns)
-            # One reordered packet is not a restart; confirm advancing frames.
+            received_ns = record.get('source_recv_unix_ns', record['recv_unix_ns'])
+            if candidate is not None and (seq, source_ns) == candidate[:2]:
+                return False  # Polling the same frame is not new evidence.
             if candidate is None or seq <= candidate[0] or source_ns <= candidate[1]:
+                self.restart_candidate = (seq, source_ns, received_ns, source_ns, 1)
+                return False
+            self.restart_candidate = (seq, source_ns, candidate[2], candidate[3], candidate[4] + 1)
+            # Require a progressing stream on both clocks, not two reordered
+            # frames or an old backlog delivered in a burst. A normal new
+            # frame clears this candidate below.
+            if (candidate[4] + 1 < 3 or received_ns - candidate[2] < 250_000_000
+                    or source_ns - candidate[3] < 250_000_000):
                 return False
             self.offset = None
             self.restarted = True

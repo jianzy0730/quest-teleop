@@ -67,6 +67,7 @@ def main():
     stamp = time.strftime("%Y%m%d_%H%M%S")
     summary_path = args.output / f"summary_{stamp}.json"
     counts, peers = Counter(), set()
+    tcp_connected = False
     assembler = FrameAssembler(only=args.only, side=args.side)
     errors = reported_errors = 0
     started = last_report = time.monotonic()
@@ -93,6 +94,7 @@ def main():
                         payload = receiver.recv_line().encode("utf-8")
                 except TransportDisconnectedError:
                     print(json.dumps({'event': 'Quest TCP disconnected; waiting for reconnect'}), flush=True)
+                    tcp_connected = False
                     publisher.latest = None
                     assembler = FrameAssembler(only=args.only, side=args.side)
                     payload = None
@@ -103,9 +105,11 @@ def main():
                     payload = None
                 if payload is not None and (not args.peer or address[0] == args.peer):
                     peer = address[0] if address else 'tcp_client'
-                    if peer not in peers:
-                        peers.add(peer)
+                    if peer not in peers or (args.transport == 'tcp' and not tcp_connected):
                         print(json.dumps({'event': 'Quest connected', 'peer': peer}), flush=True)
+                    peers.add(peer)
+                    if args.transport == 'tcp':
+                        tcp_connected = True
                     record = {"recv_unix_ns": time.time_ns(),
                               "peer": list(address) if address else None}
                     packets = []

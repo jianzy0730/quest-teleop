@@ -17,4 +17,4 @@ hand = ["scipy==1.15.3", "nlopt==2.11.0", "pin==4.1.0", "wuji-sdk==2026.9.22"]
 include = ["quest_teleop*"]
 
 [tool.setuptools.package-data]
-quest_teleop = ["hand/assets/*", "hand/vendor/wuji_retargeting/LICENSE"]
+quest_teleop = ["hand/assets/*", "hand/vendor/wuji_retargeting/LICENSE", "web.html"]

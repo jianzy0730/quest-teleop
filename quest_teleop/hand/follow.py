@@ -7,7 +7,7 @@ import time
 
 from ..config import ROOT, load_config
 from ..quest.frames import LiveGate, packets_by_key
-from ..ipc import FrameSubscriber
+from ..ipc import FrameSubscriber, write_status
 from .retarget import WujiHandRetargeter
 
 
@@ -32,6 +32,7 @@ def main():
     begun = time.monotonic()
     preview_samples = 0
     last_report = 0
+    last_status = -math.inf
     last_phase = None
     last_hardware_warning = -math.inf
     previous_hardware_limits = None
@@ -51,6 +52,13 @@ def main():
                     if status['diagnosis']:
                         raise RuntimeError(status['diagnosis'])
                     break
+            if time.monotonic() - last_status >= .5:
+                write_status(args.output / ('hand_' + args.side + '.status.json'), {
+                    'side': args.side, 'preview': not args.execute, 'samples': preview_samples,
+                    'phase': status['phase'] if status else ('preview' if preview_samples else 'awaiting_input'),
+                    'connected': bool(status and status.get('actual_rad') is not None),
+                    'diagnosis': status.get('diagnosis') if status else None})
+                last_status = time.monotonic()
             try:
                 frame = subscriber.next_latest()
                 if frame is None:
@@ -74,12 +82,12 @@ def main():
                 time.sleep(.05)
                 continue
             if not accepted:
-                time.sleep(.01)
+                time.sleep(.001)
                 continue
             t = time.monotonic()
             timing = {'input_age_ms': (time.time_ns() - rec['recv_unix_ns']) / 1e6}
             try:
-                q = mapper.solve(packet['data']['points'])
+                q = mapper.solve(packet['data']['points'], gate.source_ns / 1e9)
                 gate.fresh(rec, time.time_ns())
             except (ValueError, KeyError, TypeError, IndexError, TimeoutError) as error:
                 if time.monotonic() - last_pause_report > 2:
@@ -154,7 +162,6 @@ def main():
             if not args.execute and time.monotonic() - last_report > 1:
                 print(json.dumps({'preview': {'q_sdk': q.round(3).tolist()}}), flush=True)
                 last_report = time.monotonic()
-            time.sleep(.005)
     except KeyboardInterrupt:
         print('STOP: Ctrl+C', flush=True)
     except Exception as exc:

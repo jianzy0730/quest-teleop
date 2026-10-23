@@ -4,10 +4,11 @@ import json
 import math
 from pathlib import Path
 import time
+import uuid
 
 from ..config import ROOT, load_config
 from ..quest.frames import WristGate, packets_by_key
-from ..ipc import FrameSubscriber
+from ..ipc import FrameSubscriber, write_status
 from .retarget import WristMapper, packet_pose, pose
 
 
@@ -21,7 +22,7 @@ class ArmFollower:
         self.paused = True
         self.target = None
         self.last_input = 0.
-        self.sent = 0
+        self.generated = 0
 
     def pause(self):
         if not self.paused:
@@ -55,7 +56,7 @@ class ArmFollower:
                 print(json.dumps({'side': self.side, 'event': 'resumed', 'rebased': True}), flush=True)
             else:
                 self.target = self.mapper.map(wrist)
-                self.sent += 1
+                self.generated += 1
             self.paused = False
             self.last_input = time.monotonic()
         except (TimeoutError, ValueError, KeyError, TypeError):
@@ -89,8 +90,13 @@ def main():
     epochs = {}
     feedback = None
     connected = False
+    prepare_session = uuid.uuid4().hex
     failure = None
+    bridge_accepted = {side: 0 for side in sides}
+    bridge_rejected = {side: 0 for side in sides}
+    last_rejection = {}
     last_report = last_wait = -math.inf
+    last_status = -math.inf
     args.output.mkdir(parents=True, exist_ok=True)
     log_path = args.output / ('arms_' + time.strftime('%Y%m%d_%H%M%S') + '.json')
     print(f'Waiting for Quest at {args.frame_host}:{args.frame_port}. Ctrl+C stops.', flush=True)
@@ -101,9 +107,21 @@ def main():
                 if bridge is not None:
                     reply = bridge.next_latest(timeout=.02, request={
                         'targets': {s: t.tolist() for s, t in targets.items()},
-                        'feedback_ns': feedback_ns, 'epochs': epochs})
+                        'feedback_ns': feedback_ns, 'epochs': epochs,
+                        'prepare_session': prepare_session})
                     if reply is not None:
                         feedback = reply
+                        for side in reply.get('accepted', []):
+                            if side in bridge_accepted:
+                                bridge_accepted[side] += 1
+                        for side, reason in reply.get('rejected', {}).items():
+                            if side in bridge_rejected:
+                                bridge_rejected[side] += 1
+                                last_rejection[side] = reason
+                        if feedback.get('rejected') and started - last_report >= 1:
+                            print(json.dumps({'warning': 'Thor rejected targets',
+                                              'detail': feedback['rejected']}), flush=True)
+                            last_report = started
                         feedback_ns = feedback['source_recv_unix_ns']
                         for side, follower in followers.items():
                             if epochs.get(side) != feedback['epochs'][side]:
@@ -131,7 +149,9 @@ def main():
                         targets[side] = follower.target
                 if not prepared and started - last_wait >= 5:
                     print(json.dumps({'phase': 'waiting for Thor bridge' if feedback is None else
-                                      'waiting for Thor mode=[1,1], input=1, IK source=2'}), flush=True)
+                                      'waiting for Thor mode=[1,1], input=1, IK source=2',
+                                      'actual_control': feedback.get('control') if feedback else None,
+                                      'mode_preparation': feedback.get('mode_preparation') if feedback else None}), flush=True)
                     last_wait = started
                 if bridge is None and started - last_report >= 1:
                     print(json.dumps({'preview': {side: target.tolist() for side, target in targets.items()}}), flush=True)
@@ -145,6 +165,17 @@ def main():
                 if started - last_wait >= 5:
                     print(json.dumps({'warning': 'waiting for Quest/Thor', 'detail': str(error)}), flush=True)
                     last_wait = started
+            if started - last_status >= .5:
+                write_status(args.output / 'arms.status.json', {
+                    'connected': connected, 'preview': args.preview,
+                    'prepared': bridge is None or bool(feedback and feedback.get('prepared')),
+                    'control': feedback.get('control') if feedback else None,
+                    'mode_preparation': feedback.get('mode_preparation') if feedback else None,
+                    'sides': {s: {'calibrated': f.mapper is not None, 'paused': f.paused,
+                                  'generated': f.generated} for s, f in followers.items()},
+                    'accepted': bridge_accepted, 'rejected': bridge_rejected,
+                    'last_rejection': last_rejection})
+                last_status = started
             time.sleep(max(0., .02 - (time.monotonic() - started)))
     except KeyboardInterrupt:
         print('STOP: Ctrl+C', flush=True)
@@ -155,7 +186,12 @@ def main():
         subscriber.close()
         if bridge is not None:
             bridge.close()
-        summary = {'preview': args.preview, 'sent': {s: f.sent for s, f in followers.items()}, 'failure': failure}
+        summary = {'preview': args.preview,
+                   'generated': {s: f.generated for s, f in followers.items()},
+                   'bridge_accepted': bridge_accepted,
+                   'bridge_rejected': bridge_rejected,
+                   'last_rejection': last_rejection,
+                   'failure': failure}
         log_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
         print(json.dumps(summary), flush=True)
     if failure:
