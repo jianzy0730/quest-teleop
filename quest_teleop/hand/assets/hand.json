@@ -1,8 +1,8 @@
 {
   "safety": {
     "effort_limit_a": 0.8,
-    "mit_kp": 2.0,
-    "mit_kd": 0.04
+    "mit_kp": 1.0,
+    "mit_kd": 0.2
   },
   "gestures": {
     "joint_limits_rad": [
