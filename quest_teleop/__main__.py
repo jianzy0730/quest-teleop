@@ -66,6 +66,18 @@ def adb_reverse(port, stop):
     raise KeyboardInterrupt
 
 
+def wait_for_teleop_start(output, stop, receiver):
+    """Keep receiving Quest frames without starting any robot followers."""
+    print('Waiting for victory gesture before starting teleoperation.', flush=True)
+    while not stop.exists():
+        if receiver.poll() is not None:
+            raise RuntimeError('receive exited while waiting for gesture; see ' + str(output / 'receive.log'))
+        if (output / 'START_TELEOP').exists():
+            return not stop.exists()
+        time.sleep(.05)
+    return False
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, help='JSON configuration file')
@@ -78,12 +90,16 @@ def main():
     parser.add_argument('--thor-port', type=int)
     parser.add_argument('--frame-port', type=int, default=8001)
     parser.add_argument('--frame-bind', default='127.0.0.1', help='Local frame listener IP; default localhost')
-    parser.add_argument('--preview', action='store_true', help='Calculate poses locally without connecting to devices')
     parser.add_argument('--capture-only', action='store_true', help='Receive Quest data without starting robot followers')
+    parser.add_argument('--wait-for-start', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--replay', type=Path, help='Replay a recorded Quest JSONL instead of receiving live input')
     parser.add_argument('--speed', type=float, default=1., help='Replay speed (default 1)')
     parser.add_argument('--output', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.wait_for_start and (args.replay or args.capture_only):
+        parser.error('--wait-for-start is only for live teleoperation')
+    if args.replay and args.capture_only:
+        parser.error('--capture-only is only for receiving live Quest data')
     config = load_config(args.config)
     for name in ('only', 'side', 'transport', 'port', 'scale', 'thor_host', 'thor_port'):
         if getattr(args, name) is None:
@@ -107,7 +123,7 @@ def main():
         parser.error('Thor port must be 1..65535')
     sides = ('left', 'right') if args.side == 'both' else (args.side,)
     arms = args.only in ('arm', 'both')
-    if args.only != 'arm' and not args.preview and not args.capture_only:
+    if args.only != 'arm' and not args.capture_only:
         for side in sides:
             if not config[side + '_hand_serial']:
                 parser.error(side + '_hand_serial must be configured')
@@ -153,26 +169,22 @@ def main():
             command = [sys.executable, '-u', '-m', 'quest_teleop.recording', str(args.replay.resolve()),
                        '--speed', str(args.speed), '--frame-host', frame_bind, '--frame-port', str(args.frame_port),
                        '--output', str(output), '--only', args.only, '--side', args.side]
-            if args.capture_only:
-                command += ['--capture-only']
         launch('receive', command)
+        if args.wait_for_start and not wait_for_teleop_start(output, stop, children['receive']):
+            return
         if arms and not args.capture_only:
             command = [sys.executable, '-u', '-m', 'quest_teleop.arm.follow',
                        '--frame-host', frame_host, '--frame-port', str(args.frame_port),
                        '--side', args.side, '--scale', str(args.scale),
                        '--thor-host', args.thor_host, '--thor-port', str(args.thor_port),
                        '--output', str(output), '--stop-file', str(stop)]
-            if args.preview:
-                command += ['--preview']
-            else:
-                print(f'Thor target bridge: {args.thor_host}:{args.thor_port}; '
-                      f'on Thor run: python3 -u -m quest_teleop.arm.thor --port {args.thor_port}', flush=True)
+            print(f'Thor target bridge: {args.thor_host}:{args.thor_port}; '
+                  f'on Thor run: python3 -u -m quest_teleop.arm.thor --port {args.thor_port}', flush=True)
             launch('arms', command)
         if args.only in ('both', 'hand') and not args.capture_only:
             for side in sides:
                 command = hand_command(config, ROOT, frame_host, args.frame_port, output, stop, effective_config, side)
-                if not args.preview:
-                    command += ['--execute']
+                command += ['--execute']
                 launch('hand_' + side, command)
         print('Preparing replay.' if args.replay else 'Waiting for Quest. Start Streaming; Video Feed OFF. Ctrl+C stops forwarding and local hands.', flush=True)
         positions = {name: 0 for name in children}
@@ -192,7 +204,7 @@ def main():
                         row = json.loads(line)
                     except ValueError:
                         continue
-                    if any(key in row for key in ('warning', 'calibrated', 'preview', 'phase', 'event')):
+                    if any(key in row for key in ('warning', 'calibrated', 'phase', 'event')):
                         print('[' + name + '] ' + json.dumps(row), flush=True)
             time.sleep(.1)
     except KeyboardInterrupt:

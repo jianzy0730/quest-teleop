@@ -1,4 +1,4 @@
-"""Quest hand preview and live follow. Ctrl+C stops."""
+"""Follow Quest hand targets on the physical hand. Ctrl+C stops."""
 import argparse
 import json
 import math
@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--frame-host', default='127.0.0.1')
     parser.add_argument('--frame-port', type=int, default=8001)
-    parser.add_argument('--execute', action='store_true')
+    parser.add_argument('--execute', action='store_true', required=True, help='Enable physical hand following')
     parser.add_argument('--stop-file', type=Path, help=argparse.SUPPRESS)
     parser.add_argument('--side', choices=['left', 'right'], default='right')
     parser.add_argument('--output', type=Path, default=ROOT / 'logs')
@@ -30,8 +30,7 @@ def main():
     status = None
     gate = LiveGate()
     begun = time.monotonic()
-    preview_samples = 0
-    last_report = 0
+    samples = 0
     last_status = -math.inf
     last_phase = None
     last_hardware_warning = -math.inf
@@ -54,8 +53,8 @@ def main():
                     break
             if time.monotonic() - last_status >= .5:
                 write_status(args.output / ('hand_' + args.side + '.status.json'), {
-                    'side': args.side, 'preview': not args.execute, 'samples': preview_samples,
-                    'phase': status['phase'] if status else ('preview' if preview_samples else 'awaiting_input'),
+                    'side': args.side, 'samples': samples,
+                    'phase': status['phase'] if status else 'awaiting_input',
                     'connected': bool(status and status.get('actual_rad') is not None),
                     'diagnosis': status.get('diagnosis') if status else None})
                 last_status = time.monotonic()
@@ -100,68 +99,64 @@ def main():
                 gate.restarted = False
                 print(json.dumps({'warning': 'Quest source restarted; hand resumes absolute poses'}), flush=True)
             timing['retarget_ms'] = (time.monotonic() - t) * 1000
-            preview_samples += 1
-            if args.execute:
-                # Initialize only after fresh input has warmed up the mapper.
-                if hand is None and preview_samples >= 20 and time.monotonic() - begun >= 1:
-                    from .wuji import WujiHand
-                    hand = WujiHand(args.side, load_config()[args.side + '_hand_serial'], args.stop_file)
-                    hand.start()
+            samples += 1
+            # Initialize only after fresh input has warmed up the mapper.
+            if hand is None and samples >= 20 and time.monotonic() - begun >= 1:
+                from .wuji import WujiHand
+                hand = WujiHand(args.side, load_config()[args.side + '_hand_serial'], args.stop_file)
+                hand.start()
+                continue
+            if hand is not None:
+                status = hand.status()
+                if status['phase'] == 'stopped':
+                    if status['diagnosis']:
+                        raise RuntimeError(status['diagnosis'])
+                    break
+                if status['phase'] == 'initializing':
+                    time.sleep(.01)
                     continue
-                if hand is not None:
-                    status = hand.status()
-                    if status['phase'] == 'stopped':
-                        if status['diagnosis']:
-                            raise RuntimeError(status['diagnosis'])
+                if (time.time_ns() - rec['recv_unix_ns']) / 1e9 > .2:
+                    continue
+                t_target = time.monotonic()
+                try:
+                    status = hand.update(q.tolist(), gate.seq)
+                except InterruptedError:
+                    if args.stop_file and args.stop_file.exists():
                         break
-                    if status['phase'] == 'initializing':
-                        time.sleep(.01)
-                        continue
-                    if (time.time_ns() - rec['recv_unix_ns']) / 1e9 > .2:
-                        continue
-                    t_target = time.monotonic()
-                    try:
-                        status = hand.update(q.tolist(), gate.seq)
-                    except InterruptedError:
-                        if args.stop_file and args.stop_file.exists():
-                            break
-                        raise
-                    timing['target_ms'] = (time.monotonic() - t_target) * 1000
-                    hardware_limits = (status.get('position_limit_joints', []),
-                                       status.get('limit_clamped_joints', []),
-                                       status.get('limit_direction_unknown', []),
-                                       status.get('feedback_limit_joints', []))
-                    now = time.monotonic()
-                    if any(hardware_limits) and (hardware_limits != previous_hardware_limits or now - last_hardware_warning >= 1):
-                        print(json.dumps({'warning': 'hand position limit; following continues',
-                                          'active_joints': hardware_limits[0],
-                                          'clamped_joints': hardware_limits[1],
-                                          'held_until_limit_clears': hardware_limits[2],
-                                          'feedback_outside_model': hardware_limits[3]}), flush=True)
-                        last_hardware_warning = now
-                    previous_hardware_limits = hardware_limits
-                    diagnostic_warnings = status.get('diagnostic_warnings', [])
-                    if diagnostic_warnings and (diagnostic_warnings != previous_diagnostic_warnings or now - last_diagnostic_warning >= 2):
-                        print(json.dumps({'warning': 'hand firmware warning; following continues',
-                                          'diagnostics': diagnostic_warnings}), flush=True)
-                        last_diagnostic_warning = now
-                    previous_diagnostic_warnings = diagnostic_warnings
-                    tracking_warning = status.get('tracking_warning')
-                    if tracking_warning and now - last_tracking_warning >= 2:
-                        print(json.dumps({'warning': 'hand tracking lag; following continues',
-                                          'detail': tracking_warning}), flush=True)
-                        last_tracking_warning = now
-                    if status.get('completion') == 'rebase_required':
-                        # The SDK worker holds measured pose for this handshake;
-                        # next fresh frame resumes absolute targets.
-                        print(json.dumps({'warning': 'Quest input resumed; hand will follow next absolute pose'}), flush=True)
-            phase = status.get('phase') if status else 'preview'
+                    raise
+                timing['target_ms'] = (time.monotonic() - t_target) * 1000
+                hardware_limits = (status.get('position_limit_joints', []),
+                                   status.get('limit_clamped_joints', []),
+                                   status.get('limit_direction_unknown', []),
+                                   status.get('feedback_limit_joints', []))
+                now = time.monotonic()
+                if any(hardware_limits) and (hardware_limits != previous_hardware_limits or now - last_hardware_warning >= 1):
+                    print(json.dumps({'warning': 'hand position limit; following continues',
+                                      'active_joints': hardware_limits[0],
+                                      'clamped_joints': hardware_limits[1],
+                                      'held_until_limit_clears': hardware_limits[2],
+                                      'feedback_outside_model': hardware_limits[3]}), flush=True)
+                    last_hardware_warning = now
+                previous_hardware_limits = hardware_limits
+                diagnostic_warnings = status.get('diagnostic_warnings', [])
+                if diagnostic_warnings and (diagnostic_warnings != previous_diagnostic_warnings or now - last_diagnostic_warning >= 2):
+                    print(json.dumps({'warning': 'hand firmware warning; following continues',
+                                      'diagnostics': diagnostic_warnings}), flush=True)
+                    last_diagnostic_warning = now
+                previous_diagnostic_warnings = diagnostic_warnings
+                tracking_warning = status.get('tracking_warning')
+                if tracking_warning and now - last_tracking_warning >= 2:
+                    print(json.dumps({'warning': 'hand tracking lag; following continues',
+                                      'detail': tracking_warning}), flush=True)
+                    last_tracking_warning = now
+                if status.get('completion') == 'rebase_required':
+                    # The SDK worker holds measured pose for this handshake;
+                    # next fresh frame resumes absolute targets.
+                    print(json.dumps({'warning': 'Quest input resumed; hand will follow next absolute pose'}), flush=True)
+            phase = status.get('phase') if status else 'awaiting_input'
             if phase != last_phase:
                 print(json.dumps({'phase': phase}), flush=True)
                 last_phase = phase
-            if not args.execute and time.monotonic() - last_report > 1:
-                print(json.dumps({'preview': {'q_sdk': q.round(3).tolist()}}), flush=True)
-                last_report = time.monotonic()
     except KeyboardInterrupt:
         print('STOP: Ctrl+C', flush=True)
     except Exception as exc:
@@ -178,7 +173,7 @@ def main():
             except Exception as exc:
                 status = hand.status()
                 failure = (failure or '') + '; cleanup: ' + str(exc)
-        summary = {'side': args.side, 'execute': args.execute, 'samples': preview_samples, 'failure': failure, 'last_timing_ms': timing, 'final_stream': status, 'log': str(log_path)}
+        summary = {'side': args.side, 'samples': samples, 'failure': failure, 'last_timing_ms': timing, 'final_stream': status, 'log': str(log_path)}
         log_path.write_text(json.dumps(summary, indent=2), encoding='utf-8')
         print(json.dumps(summary), flush=True)
     if failure:

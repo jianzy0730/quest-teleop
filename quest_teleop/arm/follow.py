@@ -71,7 +71,6 @@ def main():
     parser.add_argument('--thor-port', type=int)
     parser.add_argument('--side', choices=['left', 'right', 'both'])
     parser.add_argument('--scale', type=float)
-    parser.add_argument('--preview', action='store_true', help='Calculate poses without connecting to Thor')
     parser.add_argument('--output', type=Path, default=ROOT / 'logs')
     parser.add_argument('--stop-file', type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -81,8 +80,7 @@ def main():
     if not math.isfinite(scale) or scale <= 0:
         parser.error('scale must be positive and finite')
     subscriber = FrameSubscriber(args.frame_host, args.frame_port)
-    bridge = None if args.preview else FrameSubscriber(args.thor_host or config['thor_host'],
-                                                       args.thor_port or config['thor_port'])
+    bridge = FrameSubscriber(args.thor_host or config['thor_host'], args.thor_port or config['thor_port'])
     sides = ('left', 'right') if side == 'both' else (side,)
     followers = {side: ArmFollower(side, scale) for side in sides}
     targets = {}
@@ -104,41 +102,40 @@ def main():
         while not (args.stop_file and args.stop_file.exists()):
             started = time.monotonic()
             try:
-                if bridge is not None:
-                    reply = bridge.next_latest(timeout=.02, request={
-                        'targets': {s: t.tolist() for s, t in targets.items()},
-                        'feedback_ns': feedback_ns, 'epochs': epochs,
-                        'prepare_session': prepare_session})
-                    if reply is not None:
-                        feedback = reply
-                        for side in reply.get('accepted', []):
-                            if side in bridge_accepted:
-                                bridge_accepted[side] += 1
-                        for side, reason in reply.get('rejected', {}).items():
-                            if side in bridge_rejected:
-                                bridge_rejected[side] += 1
-                                last_rejection[side] = reason
-                        if feedback.get('rejected') and started - last_report >= 1:
-                            print(json.dumps({'warning': 'Thor rejected targets',
-                                              'detail': feedback['rejected']}), flush=True)
-                            last_report = started
-                        feedback_ns = feedback['source_recv_unix_ns']
-                        for side, follower in followers.items():
-                            if epochs.get(side) != feedback['epochs'][side]:
-                                follower.pause()
-                        epochs = feedback['epochs']
-                        if not connected:
-                            print(json.dumps({'event': 'Thor connected'}), flush=True)
-                            connected = True
-                    if feedback is not None and not 0 <= (time.time_ns() - feedback['recv_unix_ns']) / 1e9 <= .2:
-                        bridge.close()
-                        raise TimeoutError('Thor feedback delayed')
+                reply = bridge.next_latest(timeout=.02, request={
+                    'targets': {s: t.tolist() for s, t in targets.items()},
+                    'feedback_ns': feedback_ns, 'epochs': epochs,
+                    'prepare_session': prepare_session})
+                if reply is not None:
+                    feedback = reply
+                    for side in reply.get('accepted', []):
+                        if side in bridge_accepted:
+                            bridge_accepted[side] += 1
+                    for side, reason in reply.get('rejected', {}).items():
+                        if side in bridge_rejected:
+                            bridge_rejected[side] += 1
+                            last_rejection[side] = reason
+                    if feedback.get('rejected') and started - last_report >= 1:
+                        print(json.dumps({'warning': 'Thor rejected targets',
+                                          'detail': feedback['rejected']}), flush=True)
+                        last_report = started
+                    feedback_ns = feedback['source_recv_unix_ns']
+                    for side, follower in followers.items():
+                        if epochs.get(side) != feedback['epochs'][side]:
+                            follower.pause()
+                    epochs = feedback['epochs']
+                    if not connected:
+                        print(json.dumps({'event': 'Thor connected'}), flush=True)
+                        connected = True
+                if feedback is not None and not 0 <= (time.time_ns() - feedback['recv_unix_ns']) / 1e9 <= .2:
+                    bridge.close()
+                    raise TimeoutError('Thor feedback delayed')
                 targets = {}
                 frame = subscriber.next_latest(timeout=.02)
                 packets = packets_by_key(frame) if frame is not None else None
-                prepared = bridge is None or feedback is not None and feedback['prepared']
+                prepared = feedback is not None and feedback['prepared']
                 for side, follower in followers.items():
-                    actual = [0, 0, 0, 0, 0, 0, 1] if bridge is None else (feedback['actual'].get(side) if feedback else None)
+                    actual = feedback['actual'].get(side) if feedback else None
                     if not prepared or actual is None:
                         follower.pause()
                     elif packets is not None:
@@ -153,9 +150,6 @@ def main():
                                       'actual_control': feedback.get('control') if feedback else None,
                                       'mode_preparation': feedback.get('mode_preparation') if feedback else None}), flush=True)
                     last_wait = started
-                if bridge is None and started - last_report >= 1:
-                    print(json.dumps({'preview': {side: target.tolist() for side, target in targets.items()}}), flush=True)
-                    last_report = started
             except (OSError, ValueError, KeyError, TypeError) as error:
                 targets.clear()
                 feedback = None
@@ -167,8 +161,8 @@ def main():
                     last_wait = started
             if started - last_status >= .5:
                 write_status(args.output / 'arms.status.json', {
-                    'connected': connected, 'preview': args.preview,
-                    'prepared': bridge is None or bool(feedback and feedback.get('prepared')),
+                    'connected': connected,
+                    'prepared': bool(feedback and feedback.get('prepared')),
                     'control': feedback.get('control') if feedback else None,
                     'mode_preparation': feedback.get('mode_preparation') if feedback else None,
                     'sides': {s: {'calibrated': f.mapper is not None, 'paused': f.paused,
@@ -184,10 +178,8 @@ def main():
         print('STOP: ' + failure, flush=True)
     finally:
         subscriber.close()
-        if bridge is not None:
-            bridge.close()
-        summary = {'preview': args.preview,
-                   'generated': {s: f.generated for s, f in followers.items()},
+        bridge.close()
+        summary = {'generated': {s: f.generated for s, f in followers.items()},
                    'bridge_accepted': bridge_accepted,
                    'bridge_rejected': bridge_rejected,
                    'last_rejection': last_rejection,

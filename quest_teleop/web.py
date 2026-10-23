@@ -26,9 +26,10 @@ class Controller:
         self.lock = threading.RLock()
         self.recorder = Recorder(ROOT / 'recordings')
         self.gesture_enabled = False
+        self.waiting_for_gesture = False
         self.gestures = {}
         self.process = self.output = self.console = None
-        self.mode, self.execution = 'idle', 'execute'
+        self.mode = 'idle'
         self.options = dict(self.config)
         self.stopping = False
         self.latest = None
@@ -76,9 +77,10 @@ class Controller:
                 options[key] = body.get(key, options[key])
                 if options[key] not in choices:
                     raise ValueError('Invalid ' + key)
-            execution = body.get('execution', 'preview' if replay else 'execute')
-            if execution not in (('preview', 'execute') if replay else ('execute',)):
-                raise ValueError('Invalid execution mode')
+            # Reject obsolete clients instead of turning their non-motion request
+            # into robot execution after the mode selector has been removed.
+            if body.get('execution', 'execute') != 'execute':
+                raise ValueError('仅支持执行到机器人，请刷新页面后重试')
             options['scale'] = float(body.get('scale', options['scale']))
             if not math.isfinite(options['scale']) or options['scale'] <= 0:
                 raise ValueError('比例必须是大于零的有限数值')
@@ -100,10 +102,10 @@ class Controller:
                        '--transport', options['transport'], '--port', str(port), '--scale', str(options['scale'])]
             if self.config_path:
                 command += ['--config', str(self.config_path.resolve())]
-            if execution == 'preview':
-                command += ['--preview']
             if replay:
                 command += ['--replay', str(path), '--speed', str(speed)]
+            elif self.gesture_enabled:
+                command += ['--wait-for-start']
             if self.console:
                 self.console.close()
             self.console = (output / 'console.log').open('w', encoding='utf-8')
@@ -111,7 +113,8 @@ class Controller:
                 env=dict(os.environ, PYTHONUTF8='1', PYTHONIOENCODING='utf-8'),
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             self.output, self.options = output, options
-            self.mode, self.execution = ('replay' if replay else 'live'), execution
+            self.mode = 'replay' if replay else 'live'
+            self.waiting_for_gesture = self.gesture_enabled and not replay
             self.stopping, self.error, self.latest = False, None, None
             self.gestures = {}
             self.log_position = 0
@@ -127,17 +130,18 @@ class Controller:
         if type(enabled) is not bool:
             raise ValueError('enabled must be a boolean')
         with self.lock:
+            if self._alive():
+                raise ValueError('请先停止当前会话，再修改手势启动设置')
             self.gesture_enabled = enabled
             self.gestures = {}
 
     def stop_recording(self):
         with self.lock:
             self.recorder.stop()
-            for gesture in self.gestures.values():
-                gesture.block()
 
-    def _gesture_record(self, frame):
-        if not self.gesture_enabled or self.mode != 'live' or self.stopping:
+    def _gesture_start(self, frame):
+        if (not self.waiting_for_gesture or not self._alive()
+                or self.mode != 'live' or self.stopping):
             return
         sides = ('Left', 'Right') if self.options['side'] == 'both' else (self.options['side'].title(),)
         keys = {side + '/landmarks' for side in sides}
@@ -148,29 +152,38 @@ class Controller:
                     self.gestures[packet['key']] = VictoryGesture()
                 gesture = self.gestures[packet['key']]
                 triggered = gesture.update(packet) or triggered
-        if triggered and not self.recorder.file:
+        if triggered:
             try:
-                self.record()
+                self._require_live_input()
             except ValueError:
-                pass  # Keep following when another required stream is not ready.
+                self.gestures.clear()
+                return  # Restart the hold when the selected streams become ready.
+            if not (self.output / 'STOP').exists():
+                (self.output / 'START_TELEOP').touch()
+                self.waiting_for_gesture = False
+
+    def _require_live_input(self):
+        if self.latest is None:
+            raise ValueError('尚未收到 Quest 数据，请先开启串流')
+        required = []
+        sides = ('Left', 'Right') if self.options['side'] == 'both' else (self.options['side'].title(),)
+        for side in sides:
+            required.append(side + '/landmarks')
+            if self.options['only'] != 'hand':
+                required.append(side + '/wrist')
+        if self.options['only'] != 'hand':
+            required.append('Head/pose')
+        packets = {p['key']: p for p in self.latest['packets']}
+        if any(k not in packets or not -.1 <= (time.time_ns() - packets[k]['recv_unix_ns']) / 1e9 <= .2 for k in required):
+            raise ValueError('所选侧数据未就绪：请保持手在视野内，开启 Head Pose / Debug Info')
 
     def record(self):
         with self.lock:
             if not self._alive() or self.mode != 'live' or self.stopping:
                 raise ValueError('请先启动实时会话')
-            if self.latest is None:
-                raise ValueError('尚未收到 Quest 数据，请先开启串流')
-            required = []
-            sides = ('Left', 'Right') if self.options['side'] == 'both' else (self.options['side'].title(),)
-            for side in sides:
-                required.append(side + '/landmarks')
-                if self.options['only'] != 'hand':
-                    required.append(side + '/wrist')
-            if self.options['only'] != 'hand':
-                required.append('Head/pose')
-            packets = {p['key']: p for p in self.latest['packets']}
-            if any(k not in packets or not -.1 <= (time.time_ns() - packets[k]['recv_unix_ns']) / 1e9 <= .2 for k in required):
-                raise ValueError('所选侧数据未就绪：请保持手在视野内，开启 Head Pose / Debug Info')
+            if self.waiting_for_gesture:
+                raise ValueError('请先用 ✌ 手势开始遥操，再开始采集')
+            self._require_live_input()
             self.recorder.start(self.options)
 
     def _read_state(self, name):
@@ -189,12 +202,13 @@ class Controller:
             packets = self.latest['packets'] if self.latest else []
             ages = {p['key']: max(0, (time.time_ns() - p['recv_unix_ns']) / 1e9) for p in packets}
             return {'active': active, 'stopping': self.stopping and active, 'mode': self.mode,
-                    'execution': self.execution, 'options': self.options, 'error': self.error,
+                    'options': self.options, 'error': self.error,
                     'quest': {'live': active and self.mode == 'live' and any(a < .2 for a in ages.values()), 'ages': ages},
                     'arms': self._read_state('arms'),
                     'hands': {s: self._read_state('hand_' + s) for s in ('left', 'right')},
                     'replay': self._read_state('replay'), 'recording': self.recorder.status(),
-                    'gesture_enabled': self.gesture_enabled}
+                    'gesture_enabled': self.gesture_enabled,
+                    'waiting_for_gesture': active and self.waiting_for_gesture}
 
     def _logs(self):
         with (self.output / 'console.log').open(encoding='utf-8', errors='replace') as source:
@@ -241,7 +255,7 @@ class Controller:
                         with self.lock:
                             if output == self.output:
                                 self.latest = frame
-                                self._gesture_record(frame)
+                                self._gesture_start(frame)
                                 self.recorder.add(frame)
                 except (OSError, ValueError, KeyError) as error:
                     subscriber.close()
@@ -322,7 +336,7 @@ def make_handler(controller):
                     controller.record()
                 elif route == '/api/record/stop':
                     controller.stop_recording()
-                elif route == '/api/record/gesture':
+                elif route == '/api/teleop/gesture':
                     controller.set_gesture(body.get('enabled'))
                 else:
                     return self.reply(404, {'error': 'Not found'})

@@ -149,12 +149,12 @@ def ready(output, only, side):
         if name == 'arms':
             if not state['prepared'] or any(not v['calibrated'] or v['paused'] for v in state['sides'].values()):
                 return False
-        elif not (state['preview'] and state['samples'] >= 20 or state['phase'] == 'running'):
+        elif state['phase'] != 'running':
             return False
     return True
 
 
-def replay(path, output, host, port, speed=1., only='both', side='right', capture_only=False):
+def replay(path, output, host, port, speed=1., only='both', side='right'):
     read_header(path)
     source = frames(path)
     _, first = next(source)
@@ -171,7 +171,7 @@ def replay(path, output, host, port, speed=1., only='both', side='right', captur
         report('preparing')
         # Hold the initial input until SDK initialization and arm calibration
         # finish; none of the recorded movement is consumed during this wait.
-        while not stop.exists() and not (capture_only or ready(output, only, side)):
+        while not stop.exists() and not ready(output, only, side):
             publisher.publish(clock.frame(first, time.time_ns(), offset))
             offset += 1
             end = time.monotonic() + .02
@@ -218,11 +218,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--only', choices=['both', 'arm', 'hand'], default='both')
     parser.add_argument('--side', choices=['left', 'right', 'both'], default='right')
-    parser.add_argument('--capture-only', action='store_true')
     args = parser.parse_args()
     if not math.isfinite(args.speed) or not .1 <= args.speed <= 4:
         parser.error('speed must be 0.1..4')
-    replay(args.path, args.output, args.frame_host, args.frame_port, args.speed, args.only, args.side, args.capture_only)
+    replay(args.path, args.output, args.frame_host, args.frame_port, args.speed, args.only, args.side)
 
 
 if __name__ == '__main__':

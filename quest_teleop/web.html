@@ -44,6 +44,8 @@ progress{width:100%;height:6px;accent-color:var(--green)}footer{color:var(--mute
 <label>串流端口<input id="port" type="number" min="1" max="65535" value="8000"></label>
 <label>手臂平移比例<input id="scale" type="number" min="0.01" step="0.1" value="1"></label>
 </div></details>
+<label class="check"><input id="gesture" type="checkbox">✌ 手势开始遥操</label>
+<p class="note">勾选后，点“启动”进入等待；所选侧任一只手保持 ✌ 约 0.7 秒，响一声后开始遥操。</p>
 </div>
 <div class="actions"><button class="primary" id="connect">启动</button><button class="danger" id="stop" disabled>停止全部</button><span id="busy"></span></div>
 <p class="note" id="streamHint">Quest：TCP / 127.0.0.1 / 8000</p>
@@ -58,17 +60,15 @@ progress{width:100%;height:6px;accent-color:var(--green)}footer{color:var(--mute
 <div class="card"><div class="record-head"><h2>采集</h2><span id="recordState">待命</span></div>
 <div class="timer" id="elapsed">00:00.0</div>
 <div class="actions"><button class="primary" id="record" disabled>开始采集</button><button id="endRecord" disabled>结束采集</button></div>
-<label class="check"><input id="gesture" type="checkbox">✌ 手势开始录制</label>
-<p class="note">开启后，所选侧任一只手保持 ✌ 约 0.7 秒即可开始，电脑会响一声。结束仍点“结束采集”，遥操继续。</p>
+<p class="note">点“开始采集”录制动作，点“结束采集”保存；结束采集后遥操继续。</p>
 </div>
 <div class="card"><h2>回放</h2><div class="list" id="takes"><p>还没有录制动作。</p></div>
 <div class="fields">
 <label>速度<select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select></label>
-<label>回放方式<select id="replayExecution"><option value="preview">仅预览</option><option value="execute">执行到机器人</option></select></label>
 </div>
-<div class="actions"><button class="primary" id="replay" disabled>回放选中动作</button><span id="playState"></span></div>
+<div class="actions"><button class="primary" id="replay" disabled>回放到机器人</button><span id="playState"></span></div>
 <progress id="progress" class="hidden" max="1" value="0"></progress>
-<p class="note">无需 Quest；手臂从当前位置复现相对动作。</p>
+<p class="note">回放会驱动所选录制对应的设备，无需 Quest；手臂从当前位置复现相对动作。</p>
 </div>
 </div>
 <footer>关闭网页不会停止运行。请点“停止全部”，或在终端按 Ctrl+C。</footer>
@@ -81,7 +81,7 @@ function enableSound() {
   const Audio = window.AudioContext || window.webkitAudioContext;
   if (Audio) { audio ||= new Audio(); audio.resume().catch(() => {}); }
 }
-function recordingSound() {
+function startSound() {
   if (!audio || audio.state !== 'running') return;
   const tone = audio.createOscillator(), gain = audio.createGain(), t = audio.currentTime;
   tone.frequency.value = 880;
@@ -142,24 +142,23 @@ function renderDevices(s) {
   const a = s.arms, fresh = a?.fresh;
   const armStates = sides.map(side => a?.sides?.[side]);
   const following = fresh && a.prepared && armStates.every(state => state?.calibrated && !state.paused);
-  const armText = !fresh ? '等待启动' : a.preview ? '预览中' : !a.connected ? '等待连接' : !a.prepared ? '等待控制模式' : following ? '跟随中' : '等待输入';
+  const armText = s.waiting_for_gesture ? '等待 ✌ 手势' : !fresh ? '等待启动' : !a.connected ? '等待连接' : !a.prepared ? '等待控制模式' : following ? '跟随中' : '等待输入';
   device('thor', armText, s.options.side === 'both' ? '左右双臂' : `${labels[s.options.side]}手臂`, following);
-  const phases = {initializing: '正在连接', awaiting_input: '等待输入', enabling: '正在使能', running: '跟随中', paused: '暂停', rebasing: '重新对齐', preview: '预览中', stopped: '已停止'};
+  const phases = {initializing: '正在连接', awaiting_input: '等待输入', enabling: '正在使能', running: '跟随中', paused: '暂停', rebasing: '重新对齐', stopped: '已停止'};
   for (const side of ['left', 'right']) {
     const id = side === 'left' ? 'handLeft' : 'handRight', h = s.hands[side];
     $(id).classList.toggle('hidden', !controlling || s.options.only === 'arm' || !sides.includes(side));
-    device(id, h?.fresh ? phases[h.phase] || '等待输入' : '等待启动', h?.fresh ? h.diagnosis : '', h?.fresh && (h.connected || h.preview));
+    device(id, s.waiting_for_gesture ? '等待 ✌ 手势' : h?.fresh ? phases[h.phase] || '等待输入' : '等待启动', h?.fresh ? h.diagnosis : '', h?.fresh && h.connected);
   }
-  $('deviceNote').textContent = !active ? '启动后显示连接状态。' : s.execution === 'preview' ? '预览中，不连接机器人。' : '';
+  $('deviceNote').textContent = !active ? '启动后显示连接状态。' : s.waiting_for_gesture ? '已进入等待，识别到 ✌ 后启动所选设备。' : '';
 }
 function render(s) {
-  if (s.recording.active && current && !current.recording.active) recordingSound();
+  if (s.active && !s.stopping && s.mode === 'live' && current?.waiting_for_gesture && !s.waiting_for_gesture) startSound();
   current = s;
   $('gesture').checked = s.gesture_enabled;
   if (!initialized || s.active) {
     for (const key of ['only', 'side', 'transport', 'scale']) $(key).value = s.options[key];
     $('port').value = s.options.port || (s.options.transport === 'usb' ? 8000 : 9000);
-    if (s.mode === 'replay') $('replayExecution').value = s.execution === 'execute' ? 'execute' : 'preview';
     initialized = true;
     streamHint();
   }
@@ -167,13 +166,13 @@ function render(s) {
   document.querySelectorAll('#settings input,#settings select').forEach(e => e.disabled = active);
   $('connect').disabled = active;
   $('stop').disabled = !active || s.stopping;
-  $('record').disabled = !active || s.mode !== 'live' || rec.active || s.stopping || !s.quest.live;
+  $('record').disabled = !active || s.mode !== 'live' || rec.active || s.stopping || s.waiting_for_gesture || !s.quest.live;
   $('endRecord').disabled = !rec.active;
   $('replay').disabled = active || !selected;
-  $('speed').disabled = $('replayExecution').disabled = active;
-  $('sessionState').textContent = s.stopping ? '停止中' : !active ? '未启动' : playing ? '回放中' : rec.active ? '遥操 + 录制中' : '遥操中';
+  $('speed').disabled = active;
+  $('sessionState').textContent = s.stopping ? '停止中' : !active ? '未启动' : playing ? '回放中' : s.waiting_for_gesture ? '等待 ✌ 手势' : rec.active ? '遥操 + 录制中' : '遥操中';
   $('elapsed').textContent = timecode(rec.active ? rec.elapsed_s : rec.last?.elapsed_s);
-  $('recordState').textContent = rec.active ? '● 采集中' : active && s.mode === 'live' && s.gesture_enabled ? '等待 ✌ 手势' : rec.last?.frames ? '已保存' : '待命';
+  $('recordState').textContent = rec.active ? '● 采集中' : rec.last?.frames ? '已保存' : '待命';
   renderDevices(s);
   const rp = s.replay;
   $('playState').textContent = playing ? rp?.phase === 'preparing' ? '等待设备就绪…' : `回放 ${timecode(rp?.position_s)}` : rp?.phase === 'complete' ? '回放完成' : '';
@@ -213,8 +212,8 @@ $('connect').onclick = () => { enableSound(); return action('start', {
 $('stop').onclick = () => action('stop');
 $('record').onclick = () => { enableSound(); return action('record/start'); };
 $('endRecord').onclick = () => action('record/stop');
-$('gesture').onchange = () => { enableSound(); return action('record/gesture', {enabled: $('gesture').checked}); };
-$('replay').onclick = () => action('replay', {id: selected, speed: Number($('speed').value), execution: $('replayExecution').value});
+$('gesture').onchange = () => { enableSound(); return action('teleop/gesture', {enabled: $('gesture').checked}); };
+$('replay').onclick = () => action('replay', {id: selected, speed: Number($('speed').value)});
 async function poll() {
   try {
     render(await api('status'));
